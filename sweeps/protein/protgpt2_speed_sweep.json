@@ -1,0 +1,38 @@
+{
+  "base": {
+    "model_family": "protgpt2",
+    "method": "specdec",
+    "prompt_text": "<|endoftext|>",
+    "max_new_tokens": 256,
+    "num_samples": 3,
+    "temperature": 1.0,
+    "top_k": 950,
+    "top_p": 0.0,
+    "accept_mode": "prob",
+    "gamma": 5,
+    "max_prompt_tokens": 64,
+
+    "target_model_name": "nferruz/ProtGPT2",
+    "draft_model_name": "(truncated)",
+    "draft_layers": 8,
+
+    "device": "cuda",
+    "dtype": "float16",
+    "seed": 42
+  },
+  "grid": {
+    "prompt_text": [
+      "<|endoftext|>M",
+      "<|endoftext|>MK",
+      "<|endoftext|>MKWVTFISLLLLFSSAYSRGVFRR",
+      "<|endoftext|>MKWVTFISLLLLFSSAYSRGVFRRDTHKSEIAHRFKDLGE",
+      "<|endoftext|>MALWMRLLPLLALLALWGPDPAAA",
+      "<|endoftext|>MVLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDL",
+      "<|endoftext|>MGSSHHHHHHSSGLVPRGSHM",
+      "<|endoftext|>MSDTLQPPPVSVRPGS"
+    ],
+    "draft_layers": [2, 3, 4, 5, 6],
+    "gamma": [3, 4, 5, 6, 7],
+    "max_prompt_tokens": [64, 128, 256]
+  }
+}

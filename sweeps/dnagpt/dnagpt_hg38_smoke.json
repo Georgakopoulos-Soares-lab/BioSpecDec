@@ -1,0 +1,44 @@
+{
+  "base": {
+    "model_family": "dnagpt",
+
+    "max_new_tokens": 8,
+    "num_samples": 1,
+
+    "temperature": 1.0,
+    "top_k": 0,
+    "top_p": 0.95,
+
+    "gamma": 2,
+    "accept_mode": "prob",
+
+    "max_prompt_tokens": 32,
+    "target_context_len": 64,
+    "draft_context_len": 64,
+
+    "target_model_name": "dna_gpt3b_m",
+    "draft_model_name": "dna_gpt0.1b_m",
+    "target_weight": "DNAGPT/checkpoints/dna_gpt3b_m.pth",
+    "draft_weight": "DNAGPT/checkpoints/dna_gpt0.1b_m.pth",
+
+    "device": "cuda",
+    "dtype": "float16",
+    "seed": 42
+  },
+  "prompt_source": {
+    "type": "hg38_csv",
+    "hg_csv": "hg38_sequences.csv",
+    "hg_prefix": "<R>",
+
+    "hg_row_indices": [1],
+    "num_prompts": 1,
+    "seed": 42
+  },
+  "grid": {
+    "gamma": [2],
+    "temperature": [1.0],
+    "max_prompt_tokens": [32],
+    "target_context_len": [64],
+    "draft_context_len": [64]
+  }
+}

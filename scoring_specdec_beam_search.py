@@ -1,16 +1,24 @@
 import argparse
+import json
 import os
 import sys
 import time
 import csv
 import random
 import math
+from typing import Any, Callable, Tuple
 
 import torch
 import torch.nn.functional as F
 
-# Add DNAGPT to sys.path to allow imports
-sys.path.append(os.path.join(os.getcwd(), 'DNAGPT'))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
+_DNAGPT_DIR = os.path.join(_REPO_ROOT, "DNAGPT")
+if os.path.isdir(_DNAGPT_DIR) and _DNAGPT_DIR not in sys.path:
+    sys.path.append(_DNAGPT_DIR)
+
+_CWD_DNAGPT_DIR = os.path.join(os.getcwd(), "DNAGPT")
+if os.path.isdir(_CWD_DNAGPT_DIR) and _CWD_DNAGPT_DIR not in sys.path:
+    sys.path.append(_CWD_DNAGPT_DIR)
 
 from dna_gpt.model import DNAGPT
 from dna_gpt.tokenizer import KmerTokenizer
@@ -69,7 +77,6 @@ def generate_baseline(model, tokenizer, prompt_ids, max_new_tokens,
     if context_len is None:
         context_len = getattr(model, "max_len", idx.size(1))
 
-    start_time = time.time()
     for _ in range(max_new_tokens):
         if idx.size(1) <= context_len:
             idx_cond = idx
@@ -94,15 +101,39 @@ def generate_baseline(model, tokenizer, prompt_ids, max_new_tokens,
 
         idx = torch.cat((idx, idx_next), dim=1)
 
-    end_time = time.time()
-    return idx, end_time - start_time
+    return idx
+
+
+def _timeit(device: torch.device, fn: Callable[[], Any]) -> Tuple[Any, float]:
+    """Accurate wall-time measurement.
+
+    - CUDA: uses cuda events + synchronize (accounts for async kernels)
+    - CPU: uses perf_counter
+    """
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        out = fn()
+        end.record()
+        torch.cuda.synchronize(device)
+        return out, float(start.elapsed_time(end) / 1000.0)
+    t0 = time.perf_counter()
+    out = fn()
+    return out, float(time.perf_counter() - t0)
+
+
+def _decode_suffix(tokenizer, full_ids_1d: list[int], prompt_len: int) -> str:
+    # Token-exact suffix decoding (no fragile string slicing).
+    return tokenizer.decode(full_ids_1d[prompt_len:])
 
 
 # ----------------------------------------------------------------------
-# Draft lookahead block (beam search style)
+# Draft block (plain sampling)
 # ----------------------------------------------------------------------
 
-def draft_block_with_lookahead(
+def draft_block(
     draft_model,
     tokenizer,
     base_prefix,          # [1, T_prefix] on draft device
@@ -111,18 +142,13 @@ def draft_block_with_lookahead(
     top_k=0,
     top_p=0.0,
     context_len=None,
-    lookahead_width=1,    # kept for API compatibility, not used
-    lookahead_depth=1,    # kept for API compatibility, not used
     debug=False,
 ):
     """
     Generate up to `max_block_tokens` draft tokens by plain autoregressive
     sampling from the draft model.
 
-    NOTE: We intentionally ignore lookahead_width / lookahead_depth so that
-    the draft token distribution is exactly what you'd get from the draft
-    model with the same (temperature, top_k, top_p), i.e. pure multinomial
-    sampling instead of any greedy beam search.
+    This is intentionally plain multinomial sampling (no beam search).
     """
     device = base_prefix.device
 
@@ -177,14 +203,13 @@ def draft_block_with_lookahead(
 
 
 # ----------------------------------------------------------------------
-# Speculative decoding with optional lookahead
+# Speculative decoding
 # ----------------------------------------------------------------------
 
 def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_new_tokens,
                          gamma=5, temperature=1.0, top_k=0, top_p=0.0,
                          accept_mode='prob',
                          target_context_len=None, draft_context_len=None,
-                         lookahead_width=1, lookahead_depth=1,
                          debug=False):
     """Speculative Sampling (Draft-Verification-Correction) with configurable
     acceptance and different context windows for target/draft.
@@ -202,19 +227,19 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
 
     accepted_count = 0
     total_draft_tokens = 0
-
-    start_time = time.time()
+    accepted_prefix_sum = 0
+    blocks = 0
 
     while idx.shape[1] < T_total:
         remaining = T_total - idx.shape[1]
         if remaining <= 0:
             break
 
-        # ---- 1. Draft generation with lookahead ----
+        # ---- 1. Draft generation ----
         curr_idx = idx.clone().to(device_draft)
         block_limit = min(gamma, remaining)
 
-        draft_tokens, draft_distributions = draft_block_with_lookahead(
+        draft_tokens, draft_distributions = draft_block(
             draft_model=draft_model,
             tokenizer=tokenizer,
             base_prefix=curr_idx,
@@ -223,8 +248,6 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
             top_k=top_k,
             top_p=top_p,
             context_len=draft_context_len,
-            lookahead_width=lookahead_width,
-            lookahead_depth=lookahead_depth,
             debug=debug,
         )
 
@@ -252,6 +275,8 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
 
         num_draft = len(draft_tokens)
         total_draft_tokens += num_draft
+        blocks += 1
+        accepted_in_block = 0
 
         # ---- 2. Target Verification ----
         draft_seq = torch.cat(draft_tokens, dim=1)    # [1, num_draft]
@@ -292,6 +317,7 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                 if r < accept_prob:
                     idx = torch.cat((idx, draft_tokens[i]), dim=1)
                     accepted_count += 1
+                    accepted_in_block += 1
                 else:
                     all_accepted = False
 
@@ -311,6 +337,7 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                 if p_t_token > p_d_token:
                     idx = torch.cat((idx, draft_tokens[i]), dim=1)
                     accepted_count += 1
+                    accepted_in_block += 1
                 else:
                     all_accepted = False
 
@@ -333,6 +360,7 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                 if token_id == target_token_id:
                     idx = torch.cat((idx, draft_tokens[i]), dim=1)
                     accepted_count += 1
+                    accepted_in_block += 1
                 else:
                     all_accepted = False
                     idx = torch.cat((idx, target_argmax), dim=1)
@@ -340,6 +368,8 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
 
             else:
                 raise ValueError(f"Unknown accept_mode: {accept_mode}")
+
+        accepted_prefix_sum += accepted_in_block
 
         # ---- 4. Bonus token if all draft tokens accepted ----
         if all_accepted:
@@ -357,9 +387,9 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
         if idx[0, -1].item() in (tokenizer.unk_id, tokenizer.pad_id):
             break
 
-    end_time = time.time()
     acceptance_rate = accepted_count / max(1, total_draft_tokens)
-    return idx, end_time - start_time, acceptance_rate
+    mean_accepted_prefix = accepted_prefix_sum / max(1, blocks)
+    return idx, acceptance_rate, mean_accepted_prefix
 
 
 # ----------------------------------------------------------------------
@@ -380,17 +410,14 @@ def run_benchmarks_for_prompt(
     accept_mode,
     target_context_len=None,
     draft_context_len=None,
-    lookahead_width=1,
-    lookahead_depth=1,
     debug=False,
     verbose=False,
-    prompt_text=None,
 ):
     """Run target baseline, draft baseline, and speculative decoding for a
     single prompt.
 
-    Returns a dict with aggregated metrics (TPS, speedup, acceptance rate, etc.)
-    plus example generated suffixes (after the prompt prefix) for:
+        Returns a dict with aggregated metrics (TPS, speedup, acceptance rate, etc.)
+        plus example generated suffixes (after the prompt prefix) for:
       - target baseline
       - draft baseline
       - specdec
@@ -406,16 +433,17 @@ def run_benchmarks_for_prompt(
     if draft_context_len is None:
         draft_context_len = getattr(draft_model, "max_len", None)
 
-    # Decode the *actual* prompt prefix used (from prompt_ids), so we can
-    # slice off exactly that many chars from generated outputs.
-    try:
-        prompt_prefix_text = tokenizer.decode(prompt_ids[0].tolist())
-    except Exception:
-        prompt_prefix_text = None
+    prompt_len = int(prompt_ids.shape[1])
+    prompt_ids_1d = prompt_ids[0].detach().cpu().tolist()
 
-    sample_target_text = None
-    sample_draft_text = None
-    sample_specdec_text = None
+    sample_prompt_ids_json = json.dumps(prompt_ids_1d)
+    sample_target_new_ids_json = None
+    sample_draft_new_ids_json = None
+    sample_specdec_new_ids_json = None
+
+    sample_target_suffix = None
+    sample_draft_suffix = None
+    sample_specdec_suffix = None
 
     if verbose:
         print("\n" + "=" * 50)
@@ -424,20 +452,30 @@ def run_benchmarks_for_prompt(
         print("\nRunning Target Baseline...")
 
     # 1. Target Baseline
+    device_target = next(target_model.parameters()).device
     for i in range(num_samples):
-        idx, duration = generate_baseline(
-            target_model, tokenizer, prompt_ids, max_new_tokens,
-            temperature, top_k, top_p,
-            context_len=target_context_len
+        idx, duration = _timeit(
+            device_target,
+            lambda: generate_baseline(
+                target_model,
+                tokenizer,
+                prompt_ids,
+                max_new_tokens,
+                temperature,
+                top_k,
+                top_p,
+                context_len=target_context_len,
+            ),
         )
         n_new = idx.shape[1] - prompt_ids.shape[1]
         metrics['target']['tokens'].append(n_new)
         metrics['target']['time'].append(duration)
 
         # Capture example target suffix for first sample
-        if i == 0 and prompt_prefix_text is not None:
-            full_dec = tokenizer.decode(idx[0].tolist())
-            sample_target_text = full_dec[len(prompt_prefix_text):]
+        if i == 0:
+            full_ids = idx[0].detach().cpu().tolist()
+            sample_target_suffix = _decode_suffix(tokenizer, full_ids, prompt_len)
+            sample_target_new_ids_json = json.dumps(full_ids[prompt_len:])
 
         if verbose:
             print(f"Target sample {i+1}: {n_new} tokens in {duration:.2f}s ({n_new/duration:.2f} tps)")
@@ -446,51 +484,69 @@ def run_benchmarks_for_prompt(
     if verbose:
         print("\nRunning Draft Baseline...")
 
+    device_draft = next(draft_model.parameters()).device
     for i in range(num_samples):
-        idx, duration = generate_baseline(
-            draft_model, tokenizer, prompt_ids, max_new_tokens,
-            temperature, top_k, top_p,
-            context_len=draft_context_len
+        idx, duration = _timeit(
+            device_draft,
+            lambda: generate_baseline(
+                draft_model,
+                tokenizer,
+                prompt_ids,
+                max_new_tokens,
+                temperature,
+                top_k,
+                top_p,
+                context_len=draft_context_len,
+            ),
         )
         n_new = idx.shape[1] - prompt_ids.shape[1]
         metrics['draft']['tokens'].append(n_new)
         metrics['draft']['time'].append(duration)
 
         # Capture example draft suffix for first sample
-        if i == 0 and prompt_prefix_text is not None:
-            full_dec = tokenizer.decode(idx[0].tolist())
-            sample_draft_text = full_dec[len(prompt_prefix_text):]
+        if i == 0:
+            full_ids = idx[0].detach().cpu().tolist()
+            sample_draft_suffix = _decode_suffix(tokenizer, full_ids, prompt_len)
+            sample_draft_new_ids_json = json.dumps(full_ids[prompt_len:])
 
         if verbose:
             print(f"Draft sample {i+1}: {n_new} tokens in {duration:.2f}s ({n_new/duration:.2f} tps)")
 
     # 3. Speculative Decoding
     if verbose:
-        print("\nRunning Speculative Decoding (with lookahead)...")
+        print("\nRunning Speculative Decoding...")
 
+    prefix_means = []
     for i in range(num_samples):
-        idx, duration, acc_rate = speculative_sampling(
-            target_model, draft_model, tokenizer, prompt_ids, max_new_tokens,
-            gamma=L,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            accept_mode=accept_mode,
-            target_context_len=target_context_len,
-            draft_context_len=draft_context_len,
-            lookahead_width=lookahead_width,
-            lookahead_depth=lookahead_depth,
-            debug=debug
+        (idx, acc_rate, mean_accepted_prefix), duration = _timeit(
+            device_target,
+            lambda: speculative_sampling(
+                target_model,
+                draft_model,
+                tokenizer,
+                prompt_ids,
+                max_new_tokens,
+                gamma=L,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                accept_mode=accept_mode,
+                target_context_len=target_context_len,
+                draft_context_len=draft_context_len,
+                debug=debug,
+            ),
         )
         n_new = idx.shape[1] - prompt_ids.shape[1]
         metrics['specdec']['tokens'].append(n_new)
         metrics['specdec']['time'].append(duration)
         metrics['specdec']['acceptance_rate'].append(acc_rate)
+        prefix_means.append(mean_accepted_prefix)
 
         # Capture example SpecDec suffix for first sample
-        if i == 0 and prompt_prefix_text is not None:
-            full_dec = tokenizer.decode(idx[0].tolist())
-            sample_specdec_text = full_dec[len(prompt_prefix_text):]
+        if i == 0:
+            full_ids = idx[0].detach().cpu().tolist()
+            sample_specdec_suffix = _decode_suffix(tokenizer, full_ids, prompt_len)
+            sample_specdec_new_ids_json = json.dumps(full_ids[prompt_len:])
 
         if verbose:
             print(f"SpecDec sample {i+1}: {n_new} tokens in {duration:.2f}s ({n_new/duration:.2f} tps) "
@@ -509,6 +565,7 @@ def run_benchmarks_for_prompt(
 
     avg_acc_rate = (sum(metrics['specdec']['acceptance_rate']) /
                     max(1, len(metrics['specdec']['acceptance_rate'])))
+    avg_prefix = (sum(prefix_means) / max(1, len(prefix_means))) if prefix_means else 0.0
     speedup_vs_target = specdec_tps / target_tps if target_tps > 0 else 0.0
 
     if verbose:
@@ -523,34 +580,39 @@ def run_benchmarks_for_prompt(
         else:
             print("Speedup vs Target: N/A")
         print(f"Mean Acceptance Rate: {avg_acc_rate:.2f}")
-        print(f"Mean Accepted Prefix Length: {avg_acc_rate * L:.2f}")
+        print(f"Mean Accepted Prefix Length: {avg_prefix:.2f}")
 
         print("\n=== Example generated suffixes (first sample) ===")
         print("Target baseline suffix:")
-        print(sample_target_text if sample_target_text is not None else "<none>")
+        print(sample_target_suffix if sample_target_suffix is not None else "<none>")
         print("\nDraft baseline suffix:")
-        print(sample_draft_text if sample_draft_text is not None else "<none>")
+        print(sample_draft_suffix if sample_draft_suffix is not None else "<none>")
         print("\nSpecDec suffix:")
-        print(sample_specdec_text if sample_specdec_text is not None else "<none>")
+        print(sample_specdec_suffix if sample_specdec_suffix is not None else "<none>")
 
-    return {
+    out = {
         "target_tps": target_tps,
         "draft_tps": draft_tps,
         "specdec_tps": specdec_tps,
         "speedup_vs_target": speedup_vs_target,
         "mean_accept_rate": avg_acc_rate,
-        "mean_accepted_prefix": avg_acc_rate * L,
+        "mean_accepted_prefix": avg_prefix,
         "target_tokens_total": target_tokens_total,
         "draft_tokens_total": draft_tokens_total,
         "specdec_tokens_total": specdec_tokens_total,
         "target_time_total": target_time_total,
         "draft_time_total": draft_time_total,
         "specdec_time_total": specdec_time_total,
-        # New: example suffixes (after prefix) for first sample
-        "sample_target_text": sample_target_text,
-        "sample_draft_text": sample_draft_text,
-        "sample_specdec_text": sample_specdec_text,
+        "sample_target_suffix": sample_target_suffix,
+        "sample_draft_suffix": sample_draft_suffix,
+        "sample_specdec_suffix": sample_specdec_suffix,
+        "sample_prompt_ids": sample_prompt_ids_json,
+        "sample_target_new_ids": sample_target_new_ids_json,
+        "sample_draft_new_ids": sample_draft_new_ids_json,
+        "sample_specdec_new_ids": sample_specdec_new_ids_json,
     }
+
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -559,8 +621,7 @@ def run_benchmarks_for_prompt(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Speculative Decoding for DNAGPT '
-                    '(configurable acceptance + hg38 CSV + draft lookahead)'
+        description='Speculative Decoding for DNAGPT (configurable acceptance + hg38 CSV)'
     )
 
     parser.add_argument('--task', default="generation", help='dtype of the model weights')
@@ -606,11 +667,6 @@ def main():
     parser.add_argument('--draft_context_len', type=int, default=None,
                         help='Max context (tokens) for draft model (default: model.max_len)')
 
-    # lookahead hyperparameters
-    parser.add_argument('--lookahead_width', type=int, default=1,
-                        help='Beam width for draft lookahead (>=1)')
-    parser.add_argument('--lookahead_depth', type=int, default=1,
-                        help='Lookahead depth (steps) for draft (>=1, <= L usually recommended)')
 
     # hg38 CSV sampling
     parser.add_argument('--hg_csv', default=None,
@@ -637,7 +693,7 @@ def main():
     print(f"Device: {device}, Dtype: {dtype}, accept_mode: {args.accept_mode}")
     print(f"Target model: {args.target_model_name}")
     print(f"Draft  model: {args.draft_model_name}")
-    print(f"Lookahead: width={args.lookahead_width}, depth={args.lookahead_depth}, L={args.L}")
+    print(f"L={args.L}")
 
     # Load Tokenizer
     _, tokenizer = get_model(args.target_model_name)
@@ -711,11 +767,8 @@ def main():
         accept_mode=args.accept_mode,
         target_context_len=target_context_len,
         draft_context_len=draft_context_len,
-        lookahead_width=args.lookahead_width,
-        lookahead_depth=args.lookahead_depth,
         debug=args.debug,
         verbose=True,
-        prompt_text=prompt,
     )
 
 

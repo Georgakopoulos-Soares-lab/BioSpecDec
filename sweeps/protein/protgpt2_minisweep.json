@@ -1,0 +1,27 @@
+{
+  "base": {
+    "model_family": "protgpt2",
+    "method": "specdec",
+    "prompt_text": "<|endoftext|>",
+    "max_new_tokens": 256,
+    "num_samples": 3,
+    "temperature": 1.0,
+    "top_k": 950,
+    "top_p": 0.0,
+    "gamma": 5,
+    "accept_mode": "prob",
+    "target_model_name": "nferruz/ProtGPT2",
+    "draft_model_name": "nferruz/ProtGPT2",
+    "draft_layers": 8,
+    "max_prompt_tokens": 64,
+    "device": "cuda",
+    "dtype": "float16",
+    "seed": 42
+  },
+  "grid": {
+    "method": ["target_baseline", "draft_baseline", "specdec"],
+    "gamma": [3, 5, 7],
+    "draft_layers": [4, 8, 12],
+    "accept_mode": ["prob"]
+  }
+}

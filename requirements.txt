@@ -1,0 +1,9 @@
+# Install torch separately to match your hardware (CPU vs CUDA) and CUDA version.
+# See README.md.
+
+pandas
+matplotlib
+transformers
+tokenizers
+accelerate
+sentencepiece

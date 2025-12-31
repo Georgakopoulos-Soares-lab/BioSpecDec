@@ -1,0 +1,35 @@
+{
+  "base": {
+    "model_family": "progen2",
+    "method": "specdec",
+    "prompt_text": "1M",
+    "max_new_tokens": 256,
+    "num_samples": 3,
+    "temperature": 1.0,
+    "top_k": 950,
+    "top_p": 0.0,
+    "gamma": 5,
+    "accept_mode": "prob",
+    "target_model_name": "hugohrban/progen2-base",
+    "draft_model_name": "hugohrban/progen2-small",
+    "tokenizer_name": null,
+    "progen2_draft_mode": "pretrained",
+    "max_prompt_tokens": 128,
+    "device": "cuda",
+    "dtype": "float16",
+    "seed": 42
+  },
+  "grid": {
+    "method": ["target_baseline", "draft_baseline", "specdec"],
+    "progen2_draft_mode": ["pretrained", "truncated"],
+    "draft_layers": [4, 6],
+    "gamma": [3, 5],
+    "accept_mode": ["prob"]
+  },
+  "constraints": [
+    {
+      "if": {"progen2_draft_mode": "pretrained"},
+      "then": {"draft_layers": [6]}
+    }
+  ]
+}

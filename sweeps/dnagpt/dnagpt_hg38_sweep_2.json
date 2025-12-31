@@ -1,0 +1,46 @@
+{
+  "base": {
+    "model_family": "dnagpt",
+    "method": "specdec",
+
+    "max_new_tokens": 256,
+    "num_samples": 3,
+
+    "temperature": 1.0,
+    "top_k": 0,
+    "top_p": 0.95,
+
+    "gamma": 4,
+    "accept_mode": "prob",
+
+    "max_prompt_tokens": 32,
+    "target_context_len": 256,
+    "draft_context_len": 256,
+
+    "target_model_name": "dna_gpt3b_m",
+    "draft_model_name": "dna_gpt0.1b_m",
+    "target_weight": "DNAGPT/checkpoints/dna_gpt3b_m.pth",
+    "draft_weight": "DNAGPT/checkpoints/dna_gpt0.1b_m.pth",
+
+    "device": "cuda",
+    "dtype": "float16",
+    "seed": 42
+  },
+  "prompt_source": {
+    "type": "hg38_csv",
+    "hg_csv": "hg38_sequences.csv",
+    "hg_prefix": "<R>",
+
+    "hg_row_indices": [6,7,8,9,11,12,13,14,15,16,17,18,19,21,22,23,24,25,26,27,28,29,31,32,33,34,35,36,37,38,39],
+    "num_prompts": 0,
+    "seed": 42
+  },
+  "grid": {
+    "method": ["target_baseline", "draft_baseline", "specdec"],
+    "gamma": [2, 3, 4, 5, 6],
+    "temperature": [0.8, 0.9, 1.0, 1.1, 1.2],
+    "max_prompt_tokens": [32, 64, 128, 256],
+    "target_context_len": [256],
+    "draft_context_len": [256]
+  }
+}
