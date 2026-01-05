@@ -171,6 +171,11 @@ def compute_grouped_stats(cfg: FileStatsConfig) -> str:
     for m in metrics:
         agg_spec[f"{m}_mean"] = (m, "mean")
         agg_spec[f"{m}_std"] = (m, "std")
+        # For perplexity, also capture the range across prompts/examples.
+        # This is useful for bar plots with min/max error bars.
+        if m.endswith("_ppl"):
+            agg_spec[f"{m}_min"] = (m, "min")
+            agg_spec[f"{m}_max"] = (m, "max")
 
     grouped = df.groupby(group_cols, dropna=False).agg(**agg_spec).reset_index()
 

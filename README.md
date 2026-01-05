@@ -1,5 +1,7 @@
 # BioSpecDec
 
+BioSpecDec is a benchmarking and analysis toolkit for speculative decoding on genomic and protein language models (DNAGPT, ProGen2, ProtGPT2). It provides multi-GPU sweep runners for large hyperparameter grids, offline likelihood/perplexity scoring to compare speculative vs. baseline decoding, and utilities to compute grouped statistics and generate paper-ready figures. The code is organized so you can easily reproduce the experiments from our manuscript, run new sweeps on your own prompts, or perform quick one-prompt sanity checks for any supported model.
+
 This repository contains:
 - Multi-GPU sweep runners (sharded across GPUs) that write **wide CSVs**.
 - Offline likelihood/perplexity scoring that augments those CSVs.

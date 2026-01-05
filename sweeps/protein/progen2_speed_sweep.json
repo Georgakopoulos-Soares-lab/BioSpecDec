@@ -6,7 +6,7 @@
     "max_new_tokens": 256,
     "num_samples": 5,
     "temperature": 1.0,
-    "top_k": 950,
+    "top_k": 0.0,
     "top_p": 0.0,
     "accept_mode": "prob",
     "gamma": 5,

@@ -12,6 +12,40 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import MaxNLocator
+
+
+AXIS_LABEL_FONTSIZE = 16
+TICK_LABEL_FONTSIZE = 13
+TITLE_FONTSIZE = 16
+
+
+def _infer_model_title(df: pd.DataFrame, fallback: str) -> str:
+    """Short model title for plots (avoid full HF repo names)."""
+
+    def _norm_key(s: str) -> str:
+        # normalize for matching: lowercase and keep only [a-z0-9]
+        s = str(s).strip().lower()
+        return "".join(ch for ch in s if ch.isalnum())
+
+    family = None
+    if "model_family" in df.columns:
+        vals = df["model_family"].dropna().unique().tolist()
+        if len(vals) == 1:
+            family = str(vals[0]).strip()
+
+    label_map = {
+        "protgpt2": "ProtGPT2",
+        "dnagpt": "DNAGPT",
+        "progen2": "ProGen2",
+    }
+
+    key = _norm_key(family) if family else _norm_key(fallback)
+    if key in label_map:
+        return label_map[key]
+
+    # If it's not one of the known families, keep it readable.
+    return family if family else fallback
 
 
 METRICS = [
@@ -148,6 +182,23 @@ def _weighted_mean(series: pd.Series, weights: pd.Series) -> float:
     return float((s[m] * w[m]).sum() / w[m].sum())
 
 
+def _weighted_std(series: pd.Series, weights: pd.Series) -> float:
+    """Weighted standard deviation (population, not sample) across rows.
+
+    This is useful when each row represents an aggregated chunk of data
+    (e.g., grouped stats) and we want spread across configurations.
+    """
+
+    s = pd.to_numeric(series, errors="coerce")
+    w = pd.to_numeric(weights, errors="coerce")
+    m = s.notna() & w.notna() & (w > 0)
+    if not m.any():
+        return float("nan")
+    mean = float((s[m] * w[m]).sum() / w[m].sum())
+    var = float((w[m] * (s[m] - mean) ** 2).sum() / w[m].sum())
+    return float(var**0.5)
+
+
 def _plot_requested(
     stats_dir: str,
     output_dir: str,
@@ -171,12 +222,15 @@ def _plot_requested(
             _plot_lines(
                 df,
                 out_path=out_path,
-                title="ProtGPT2: speedup vs L (hue=draft layers)",
+                title=None,
                 x_col="L",
                 y_col="speedup_vs_target_mean",
                 y_std_col="speedup_vs_target_std" if "speedup_vs_target_std" in df.columns else None,
                 hue_col="draft_num_layers_effective" if "draft_num_layers_effective" in df.columns else None,
                 max_hue_levels=max_hue_levels,
+                x_label="L",
+                y_label="Speedup",
+                integer_x=True,
             )
             written.append(out_path)
 
@@ -195,8 +249,22 @@ def _plot_requested(
             "draft": "draft_suffix_ppl_mean",
         }
         if "n_rows" in dfp.columns and all(c in dfp.columns for c in ppl_cols.values()):
-            dfb = _modal_slice(dfp, keep_varying=[])
-            dfb = _prep_for_plot(dfb, ["n_rows"] + list(ppl_cols.values()))
+            # For this summary, we want variability across the sweep configurations.
+            # So we do NOT modal-filter sweep axes (including prompt_len_tokens).
+            dfb = dfp
+            dfb = _prep_for_plot(
+                dfb,
+                [
+                    "n_rows",
+                    *list(ppl_cols.values()),
+                    "target_suffix_ppl_min",
+                    "target_suffix_ppl_max",
+                    "specdec_suffix_ppl_min",
+                    "specdec_suffix_ppl_max",
+                    "draft_suffix_ppl_min",
+                    "draft_suffix_ppl_max",
+                ],
+            )
 
             vals = [
                 _weighted_mean(dfb[ppl_cols["target"]], dfb["n_rows"]),
@@ -204,13 +272,21 @@ def _plot_requested(
                 _weighted_mean(dfb[ppl_cols["draft"]], dfb["n_rows"]),
             ]
 
+            yerr = [
+                _weighted_std(dfb[ppl_cols["target"]], dfb["n_rows"]),
+                _weighted_std(dfb[ppl_cols["specdec"]], dfb["n_rows"]),
+                _weighted_std(dfb[ppl_cols["draft"]], dfb["n_rows"]),
+            ]
+
             out_ppl = os.path.join(output_dir, "protgpt2__ppl_mean__bars__target_specdec_draft.png")
             plt.figure(figsize=(7, 5))
+            plt.title(_infer_model_title(dfp, fallback="protgpt2"), fontsize=TITLE_FONTSIZE)
             x = ["target", "specdec", "draft"]
-            colors = ["tab:blue", "tab:orange", "tab:green"]
-            plt.bar(x, vals, color=colors)
-            plt.ylabel("Perplexity (mean)")
-            plt.title("ProtGPT2: Average suffix PPL")
+            colors = ["#c7c7c7", "#a6cee3", "#b2df8a"]
+            plt.bar(x, vals, color=colors, yerr=yerr, capsize=6, ecolor="#666666")
+            plt.ylabel("Perplexity", fontsize=AXIS_LABEL_FONTSIZE)
+            plt.xticks(fontsize=TICK_LABEL_FONTSIZE)
+            plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
             plt.grid(True, axis="y", alpha=0.25)
             plt.tight_layout()
             plt.savefig(out_ppl, dpi=200)
@@ -248,12 +324,15 @@ def _plot_requested(
             _plot_lines(
                 d1,
                 out_path=out_cmp,
-                title="ProGen2: speedup vs L (hue=draft_mode)",
+                title=None,
                 x_col="L",
                 y_col="speedup_vs_target_mean",
                 y_std_col="speedup_vs_target_std" if "speedup_vs_target_std" in d1.columns else None,
                 hue_col="draft_mode",
                 max_hue_levels=max_hue_levels,
+                x_label="L",
+                y_label="Speedup",
+                integer_x=True,
             )
             written.append(out_cmp)
 
@@ -275,7 +354,7 @@ def _plot_requested(
                 _plot_lines(
                     d2a,
                     out_path=out_acc,
-                    title="ProGen2 (truncated): mean accept rate vs draft layers",
+                    title=None,
                     x_col="draft_num_layers_effective",
                     y_col="mean_accept_rate_mean",
                     y_std_col=None,
@@ -300,12 +379,13 @@ def _plot_requested(
             _plot_lines(
                 d3,
                 out_path=out_sp,
-                title="ProGen2 (truncated): speedup vs draft layers (hue=L)",
+                title=None,
                 x_col="draft_num_layers_effective",
                 y_col="speedup_vs_target_mean",
                 y_std_col="speedup_vs_target_std" if "speedup_vs_target_std" in d3.columns else None,
                 hue_col="L",
                 max_hue_levels=max_hue_levels,
+                y_label="Speedup",
             )
             written.append(out_sp)
 
@@ -316,8 +396,21 @@ def _plot_requested(
             "draft": "draft_suffix_ppl_mean",
         }
         if "n_rows" in dfg.columns and all(c in dfg.columns for c in ppl_cols.values()):
-            dgb = _modal_slice(dfg, keep_varying=[])
-            dgb = _prep_for_plot(dgb, ["n_rows"] + list(ppl_cols.values()))
+            # For this summary, we want variability across the sweep configurations.
+            dgb = dfg
+            dgb = _prep_for_plot(
+                dgb,
+                [
+                    "n_rows",
+                    *list(ppl_cols.values()),
+                    "target_suffix_ppl_min",
+                    "target_suffix_ppl_max",
+                    "specdec_suffix_ppl_min",
+                    "specdec_suffix_ppl_max",
+                    "draft_suffix_ppl_min",
+                    "draft_suffix_ppl_max",
+                ],
+            )
 
             vals = [
                 _weighted_mean(dgb[ppl_cols["target"]], dgb["n_rows"]),
@@ -325,13 +418,21 @@ def _plot_requested(
                 _weighted_mean(dgb[ppl_cols["draft"]], dgb["n_rows"]),
             ]
 
+            yerr = [
+                _weighted_std(dgb[ppl_cols["target"]], dgb["n_rows"]),
+                _weighted_std(dgb[ppl_cols["specdec"]], dgb["n_rows"]),
+                _weighted_std(dgb[ppl_cols["draft"]], dgb["n_rows"]),
+            ]
+
             out_ppl = os.path.join(output_dir, "progen2__ppl_mean__bars__target_specdec_draft.png")
             plt.figure(figsize=(7, 5))
+            plt.title(_infer_model_title(dfg, fallback="progen2"), fontsize=TITLE_FONTSIZE)
             x = ["target", "specdec", "draft"]
-            colors = ["tab:blue", "tab:orange", "tab:green"]
-            plt.bar(x, vals, color=colors)
-            plt.ylabel("Perplexity (mean)")
-            plt.title("ProGen2: Average suffix PPL")
+            colors = ["#c7c7c7", "#a6cee3", "#b2df8a"]
+            plt.bar(x, vals, color=colors, yerr=yerr, capsize=6, ecolor="#666666")
+            plt.ylabel("Perplexity", fontsize=AXIS_LABEL_FONTSIZE)
+            plt.xticks(fontsize=TICK_LABEL_FONTSIZE)
+            plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
             plt.grid(True, axis="y", alpha=0.25)
             plt.tight_layout()
             plt.savefig(out_ppl, dpi=200)
@@ -357,12 +458,15 @@ def _plot_requested(
             _plot_lines(
                 df,
                 out_path=out_path,
-                title="DNAGPT: speedup vs L (hue=temperature)",
+                title=None,
                 x_col="L",
                 y_col="speedup_vs_target_mean",
                 y_std_col="speedup_vs_target_std" if "speedup_vs_target_std" in df.columns else None,
                 hue_col="temperature" if "temperature" in df.columns else None,
                 max_hue_levels=max_hue_levels,
+                x_label="L",
+                y_label="Speedup",
+                integer_x=True,
             )
             written.append(out_path)
 
@@ -376,8 +480,21 @@ def _plot_requested(
         if "n_rows" in df.columns and all(c in df.columns for c in ppl_cols.values()):
             # For this bar plot, hold nuisance hyperparams constant to the modal value.
             # We don't keep any axes varying.
-            dfb = _modal_slice(df, keep_varying=[])
-            dfb = _prep_for_plot(dfb, ["n_rows"] + list(ppl_cols.values()))
+            # For this summary, we want variability across the sweep configurations.
+            dfb = df
+            dfb = _prep_for_plot(
+                dfb,
+                [
+                    "n_rows",
+                    *list(ppl_cols.values()),
+                    "target_suffix_ppl_min",
+                    "target_suffix_ppl_max",
+                    "specdec_suffix_ppl_min",
+                    "specdec_suffix_ppl_max",
+                    "draft_suffix_ppl_min",
+                    "draft_suffix_ppl_max",
+                ],
+            )
 
             vals = [
                 _weighted_mean(dfb[ppl_cols["target"]], dfb["n_rows"]),
@@ -385,13 +502,21 @@ def _plot_requested(
                 _weighted_mean(dfb[ppl_cols["draft"]], dfb["n_rows"]),
             ]
 
+            yerr = [
+                _weighted_std(dfb[ppl_cols["target"]], dfb["n_rows"]),
+                _weighted_std(dfb[ppl_cols["specdec"]], dfb["n_rows"]),
+                _weighted_std(dfb[ppl_cols["draft"]], dfb["n_rows"]),
+            ]
+
             out_ppl = os.path.join(output_dir, "dnagpt__ppl_mean__bars__target_specdec_draft.png")
             plt.figure(figsize=(7, 5))
+            plt.title(_infer_model_title(df, fallback="dnagpt"), fontsize=TITLE_FONTSIZE)
             x = ["target", "specdec", "draft"]
-            colors = ["tab:blue", "tab:orange", "tab:green"]
-            plt.bar(x, vals, color=colors)
-            plt.ylabel("Perplexity (mean)")
-            plt.title("DNAGPT: Average suffix PPL")
+            colors = ["#c7c7c7", "#a6cee3", "#b2df8a"]
+            plt.bar(x, vals, color=colors, yerr=yerr, capsize=6, ecolor="#666666")
+            plt.ylabel("Perplexity", fontsize=AXIS_LABEL_FONTSIZE)
+            plt.xticks(fontsize=TICK_LABEL_FONTSIZE)
+            plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
             plt.grid(True, axis="y", alpha=0.25)
             plt.tight_layout()
             plt.savefig(out_ppl, dpi=200)
@@ -409,12 +534,15 @@ def _plot_requested(
                 _plot_lines(
                     df2,
                     out_path=out_path2,
-                    title="DNAGPT: speedup vs prompt_len_tokens (hue=L)",
+                    title=None,
                     x_col="prompt_len_tokens",
                     y_col="speedup_vs_target_mean",
                     y_std_col="speedup_vs_target_std" if "speedup_vs_target_std" in df2.columns else None,
                     hue_col="L" if "L" in df2.columns else None,
                     max_hue_levels=max_hue_levels,
+                    x_label="Length of prompt (tokens)",
+                    y_label="Speedup",
+                    integer_x=True,
                 )
                 written.append(out_path2)
 
@@ -424,14 +552,30 @@ def _plot_requested(
 def _plot_lines(
     df: pd.DataFrame,
     out_path: str,
-    title: str,
+    title: Optional[str],
     x_col: str,
     y_col: str,
     y_std_col: Optional[str],
     hue_col: Optional[str],
     max_hue_levels: int,
+    x_label: Optional[str] = None,
+    y_label: Optional[str] = None,
+    integer_x: bool = False,
 ) -> None:
     plt.figure(figsize=(10, 6))
+    ax = plt.gca()
+
+    def _legend_label(hue: str, val: object) -> str:
+        if pd.isna(val):
+            return f"{hue}=NA"
+        if hue == "draft_num_layers_effective":
+            # More readable for ProtGPT2: show just the draft layer count.
+            try:
+                ival = int(float(val))
+                return f"Draft layers: {ival}"
+            except Exception:
+                return f"Draft layers: {val}"
+        return f"{hue}={val}"
 
     if hue_col and hue_col in df.columns:
         # Make sure stable ordering.
@@ -444,7 +588,7 @@ def _plot_lines(
             sub = sub.sort_values(x_col)
             x = sub[x_col]
             y = sub[y_col]
-            plt.plot(x, y, marker="o", linewidth=1.5, label=f"{hue_col}={hv}")
+            plt.plot(x, y, marker="o", linewidth=1.5, label=_legend_label(hue_col, hv))
             if y_std_col and y_std_col in sub.columns:
                 yerr = sub[y_std_col]
                 if yerr.notna().any():
@@ -460,9 +604,12 @@ def _plot_lines(
             if yerr.notna().any():
                 plt.fill_between(x, y - yerr, y + yerr, alpha=0.15)
 
-    plt.title(title)
-    plt.xlabel(x_col)
-    plt.ylabel(y_col)
+    if title:
+        plt.title(title)
+    plt.xlabel(x_label or x_col)
+    plt.ylabel(y_label or y_col)
+    if integer_x:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     plt.grid(True, alpha=0.25)
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)

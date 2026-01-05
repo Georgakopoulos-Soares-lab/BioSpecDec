@@ -41,7 +41,8 @@ else
 		# Prefer scored ProtGPT2 results (contains *_ppl columns).
 		"results/protgpt2_wide_scored.csv"
 		"results/protgpt2_wide.csv"
-		"results/progen2_wide.csv"
+		"results/progen2_final_final.csv",
+		"results/progen2_final_final_scored.csv"
 	)
 fi
 
