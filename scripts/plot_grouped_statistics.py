@@ -199,6 +199,209 @@ def _weighted_std(series: pd.Series, weights: pd.Series) -> float:
     return float(var**0.5)
 
 
+def _plot_dnagpt_ppl_bars_scored_by_draft_model(
+    *,
+    repo_dir: str,
+    output_dir: str,
+) -> Optional[str]:
+    """DNAGPT PPL bars using draft-model scoring for all three generations.
+
+    Reads the wide CSV produced by scripts/score_dnagpt_draft_suffix_with_draft_model.py
+    and plots mean ± std across rows for:
+      - target_suffix_ppl__draft_model
+      - specdec_suffix_ppl__draft_model
+      - draft_suffix_ppl__draft_model
+    """
+
+    path = os.path.join(repo_dir, "results", "dnagpt_final_filtered__all3_scored_by_draft_model.csv")
+    if not os.path.exists(path):
+        return None
+
+    df = pd.read_csv(path)
+    cols = {
+        "target": "target_suffix_ppl__draft_model",
+        "specdec": "specdec_suffix_ppl__draft_model",
+        "draft": "draft_suffix_ppl__draft_model",
+    }
+    if not all(c in df.columns for c in cols.values()):
+        return None
+
+    df = _prep_for_plot(df, list(cols.values()))
+
+    vals = [float(df[cols[k]].mean()) for k in ("target", "specdec", "draft")]
+    yerr = [float(df[cols[k]].std()) for k in ("target", "specdec", "draft")]
+
+    out_ppl = os.path.join(output_dir, "dnagpt__ppl_mean__bars__target_specdec_draft__scored_by_draft_model.png")
+    plt.figure(figsize=(7, 5))
+    plt.title("DNAGPT", fontsize=TITLE_FONTSIZE)
+    x = ["target", "specdec", "draft"]
+    colors = ["#c7c7c7", "#a6cee3", "#b2df8a"]
+    plt.bar(x, vals, color=colors, yerr=yerr, capsize=7, ecolor="#666666")
+    plt.ylabel("Perplexity", fontsize=AXIS_LABEL_FONTSIZE)
+    plt.xticks(fontsize=TICK_LABEL_FONTSIZE)
+    plt.yticks(fontsize=TICK_LABEL_FONTSIZE)
+    plt.grid(True, axis="y", alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(out_ppl, dpi=200)
+    plt.close()
+    return out_ppl
+
+
+def _ppl_summary_from_grouped_stats(path: str) -> Optional[dict]:
+    """Return weighted mean/std for target/specdec/draft PPL from a grouped-stats CSV."""
+
+    if not path or not os.path.exists(path):
+        return None
+
+    df = pd.read_csv(path)
+    ppl_cols = {
+        "target": "target_suffix_ppl_mean",
+        "specdec": "specdec_suffix_ppl_mean",
+        "draft": "draft_suffix_ppl_mean",
+    }
+    if "n_rows" not in df.columns or not all(c in df.columns for c in ppl_cols.values()):
+        return None
+
+    df = _prep_for_plot(df, ["n_rows", *list(ppl_cols.values())])
+    out: dict[str, tuple[float, float]] = {}
+    for k, col in ppl_cols.items():
+        mean = _weighted_mean(df[col], df["n_rows"])
+        std = _weighted_std(df[col], df["n_rows"])
+        out[k] = (mean, std)
+    return out
+
+
+def _ppl_summary_from_del family names (one label covering the 3 bars)
+    """
+
+    prot_ppl = _first_existing(
+        [
+            os.path.join(stats_dir, "protgpt2_wide_scored_grouped_stats.csv"),
+            os.path.join(stats_dir, "protgpt2_wide_grouped_stats.csv"),
+        ]
+    )
+    prog_ppl = _first_existing(
+        [
+            os.path.join(stats_dir, "progen2_wide_final_scored_grouped_stats.csv"),
+            os.path.join(stats_dir, "progen2_wide_final_grouped_stats.csv"),
+            os.path.join(stats_dir, "progen2_wide_scored_grouped_stats.csv"),
+            os.path.join(stats_dir, "progen2_wide_grouped_stats.csv"),
+        ]
+    )
+    dna_ppl = _first_existing(
+        [
+            os.path.join(stats_dir, "dnagpt_final_scored_filtered_grouped_stats.csv"),
+            os.path.join(stats_dir, "dnagpt_final_scored_grouped_stats.csv"),
+            os.path.join(stats_dir, "dnagpt_final_filtered_grouped_stats.csv"),
+            os.path.join(stats_dir, "dnagpt_hg38_wide_2_grouped_stats.csv"),
+        ]
+    )
+
+    sources = [
+        ("ProtGPT2", prot_ppl),
+        ("ProGen2", prog_ppl),
+        ("DNAGPT", dna_ppl),
+    ]
+
+    summaries: list[tuple[str, dict]] = []
+    for name, p in sources:
+        if name == "DNAGPT" and dnagpt_override_summary is not None:
+            s = dnagpt_override_summary
+        else:
+            s = _ppl_summary_from_grouped_stats(p) if p else None
+        if s is not None:
+            summaries.append((name, s))
+
+    if not summaries:
+        return None
+
+    # Plot config
+    order = ["target", "specdec", "draft"]
+    colors = {
+        "target": "#c7c7c7",
+        "specdec": "#a6cee3",
+        "draft": "#b2df8a",
+    }
+    labels = {
+        "target": "Target",
+        "specdec": "SpecDec",
+        "draft": "Draft",
+    }
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.set_xscale("log")
+
+    group_gap = 0.2
+    bar_h = 0.3
+    inner_gap = 0.08
+
+    y_positions: list[float] = []
+    x_vals: list[float] = []
+    x_errs: list[float] = []
+    bar_colors: list[str] = []
+    bar_kinds: list[str] = []
+    centers: list[float] = []
+    center_labels: list[str] = []
+
+    y = 0.0
+    for model_name, summ in summaries:
+        group_ys = []
+        for kind in order:
+            mean, std = summ.get(kind, (float("nan"), float("nan")))
+            # For log-scale, ensure we don't pass non-positive values.
+            if mean is None or not (mean > 0):
+                continue
+            if std is None or not (std == std) or std < 0:
+                std = 0.0
+            y_positions.append(y)
+            x_vals.append(float(mean))
+            x_errs.append(float(std))
+            bar_colors.append(colors[kind])
+            bar_kinds.append(kind)
+            group_ys.append(y)
+            y += bar_h + inner_gap
+
+        if group_ys:
+            centers.append(sum(group_ys) / len(group_ys))
+            center_labels.append(model_name)
+
+        y += group_gap
+
+    # Draw bars (one call per kind so the legend is clean)
+    for kind in order:
+        idxs = [i for i, k in enumerate(bar_kinds) if k == kind]
+        if not idxs:
+            continue
+        ax.barh(
+            [y_positions[i] for i in idxs],
+            [x_vals[i] for i in idxs],
+            xerr=[x_errs[i] for i in idxs],
+            height=bar_h,
+            color=colors[kind],
+            edgecolor="none",
+            alpha=0.95,
+            capsize=7,
+            error_kw={"elinewidth": 1.5, "capthick": 1.2},
+            label=labels[kind],
+        )
+
+    ax.set_yticks(centers)
+    ax.set_yticklabels(center_labels, fontsize=TICK_LABEL_FONTSIZE)
+    ax.invert_yaxis()
+
+    ax.set_xlabel("Perplexity", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.tick_params(axis="x", labelsize=TICK_LABEL_FONTSIZE)
+    ax.grid(True, axis="x", alpha=0.25)
+    ax.legend(loc="best", fontsize=11)
+
+    plt.tight_layout()
+
+    out = os.path.join(output_dir, out_name)
+    plt.savefig(out, dpi=200)
+    plt.close(fig)
+    return out
+
+
 def _plot_requested(
     stats_dir: str,
     output_dir: str,
@@ -546,29 +749,38 @@ def _plot_requested(
                 )
                 written.append(out_path2)
 
-    return written
+    # --- DNAGPT: PPL bars using draft-model scoring (all three generations) ---
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dnagpt_draft_scored = _plot_dnagpt_ppl_bars_scored_by_draft_model(repo_dir=repo_dir, output_dir=output_dir)
+    if dnagpt_draft_scored:
+        written.append(dnagpt_draft_scored)
 
+    # --- Combined PPL plot across all model families (single figure) ---
+    combined = _plot_ppl_combined(stats_dir=stats_dir, output_dir=output_dir)
+    if combined:
+        written.append(combined)
 
-def _plot_lines(
-    df: pd.DataFrame,
-    out_path: str,
-    title: Optional[str],
-    x_col: str,
-    y_col: str,
-    y_std_col: Optional[str],
-    hue_col: Optional[str],
-    max_hue_levels: int,
-    x_label: Optional[str] = None,
-    y_label: Optional[str] = None,
-    integer_x: bool = False,
-) -> None:
-    plt.figure(figsize=(10, 6))
-    ax = plt.gca()
-
-    def _legend_label(hue: str, val: object) -> str:
-        if pd.isna(val):
-            return f"{hue}=NA"
-        if hue == "draft_num_layers_effective":
+    # --- Combined PPL plot variant: DNAGPT bars scored by draft model ---
+    # Uses the raw rescoring output (one row per example), so error bars reflect
+    # spread across the dataset rather than spread across sweep configurations.
+    dnagpt_draft_scored = os.path.join(
+        os.path.dirname(stats_dir),
+        "dnagpt_final_filtered__all3_scored_by_draft_model.csv",
+    )
+    dnagpt_override = _ppl_summary_from_raw_csv(
+        dnagpt_draft_scored,
+        {
+            "target": "target_suffix_ppl__draft_model",
+            "specdec": "specdec_suffix_ppl__draft_model",
+            "draft": "draft_suffix_ppl__draft_model",
+        },
+    )
+    combined_draft_scored = _plot_ppl_combined(
+        stats_dir=stats_dir,
+        output_dir=output_dir,
+        dnagpt_override_summary=dnagpt_override,
+        out_name="ppl__combined__horizontal__logx__dnagpt_scored_by_draft_model.png",
+    )fective":
             # More readable for ProtGPT2: show just the draft layer count.
             try:
                 ival = int(float(val))

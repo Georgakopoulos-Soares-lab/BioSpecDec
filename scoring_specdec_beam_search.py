@@ -210,15 +210,18 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                          gamma=5, temperature=1.0, top_k=0, top_p=0.0,
                          accept_mode='prob',
                          target_context_len=None, draft_context_len=None,
-                         debug=False):
+                         debug=False, log_per_position=False):
     """Speculative Sampling (Draft-Verification-Correction) with configurable
     acceptance and different context windows for target/draft.
+
+    If log_per_position=True, returns an extra list of per-token decision dicts.
     """
     device_target = next(target_model.parameters()).device
     device_draft = next(draft_model.parameters()).device
 
     idx = prompt_ids.to(device_target).clone()
     T_total = idx.shape[1] + max_new_tokens
+    prompt_len = idx.size(1)
 
     if target_context_len is None:
         target_context_len = getattr(target_model, "max_len", idx.size(1))
@@ -228,6 +231,7 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
     accepted_count = 0
     total_draft_tokens = 0
     accepted_prefix_sum = 0
+    per_position_log = []
     blocks = 0
 
     while idx.shape[1] < T_total:
@@ -309,6 +313,7 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
             p_d_token = p_d[0, token_id].item()
             p_t_token = p_t[0, token_id].item()
             p_d_token = max(p_d_token, 1e-12)  # safety
+            _seq_pos = idx.size(1) - prompt_len
 
             if accept_mode == 'prob':
                 r = torch.rand(1).item()
@@ -318,8 +323,12 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                     idx = torch.cat((idx, draft_tokens[i]), dim=1)
                     accepted_count += 1
                     accepted_in_block += 1
+                    if log_per_position:
+                        per_position_log.append({"block": blocks, "pos_in_block": i, "seq_pos": _seq_pos, "token_id": token_id, "accepted": True, "p_d": p_d_token, "p_t": p_t_token, "acc_prob": accept_prob})
                 else:
                     all_accepted = False
+                    if log_per_position:
+                        per_position_log.append({"block": blocks, "pos_in_block": i, "seq_pos": _seq_pos, "token_id": token_id, "accepted": False, "p_d": p_d_token, "p_t": p_t_token, "acc_prob": accept_prob})
 
                     residual_probs = torch.clamp(p_t - p_d, min=0.0)
                     residual_sum = residual_probs.sum(dim=-1, keepdim=True)
@@ -338,8 +347,12 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                     idx = torch.cat((idx, draft_tokens[i]), dim=1)
                     accepted_count += 1
                     accepted_in_block += 1
+                    if log_per_position:
+                        per_position_log.append({"block": blocks, "pos_in_block": i, "seq_pos": _seq_pos, "token_id": token_id, "accepted": True, "p_d": p_d_token, "p_t": p_t_token})
                 else:
                     all_accepted = False
+                    if log_per_position:
+                        per_position_log.append({"block": blocks, "pos_in_block": i, "seq_pos": _seq_pos, "token_id": token_id, "accepted": False, "p_d": p_d_token, "p_t": p_t_token})
 
                     residual_probs = torch.clamp(p_t - p_d, min=0.0)
                     residual_sum = residual_probs.sum(dim=-1, keepdim=True)
@@ -361,8 +374,12 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
                     idx = torch.cat((idx, draft_tokens[i]), dim=1)
                     accepted_count += 1
                     accepted_in_block += 1
+                    if log_per_position:
+                        per_position_log.append({"block": blocks, "pos_in_block": i, "seq_pos": _seq_pos, "token_id": token_id, "accepted": True, "p_d": p_d_token, "p_t": p_t_token})
                 else:
                     all_accepted = False
+                    if log_per_position:
+                        per_position_log.append({"block": blocks, "pos_in_block": i, "seq_pos": _seq_pos, "token_id": token_id, "accepted": False, "p_d": p_d_token, "p_t": p_t_token})
                     idx = torch.cat((idx, target_argmax), dim=1)
                     break
 
@@ -389,6 +406,8 @@ def speculative_sampling(target_model, draft_model, tokenizer, prompt_ids, max_n
 
     acceptance_rate = accepted_count / max(1, total_draft_tokens)
     mean_accepted_prefix = accepted_prefix_sum / max(1, blocks)
+    if log_per_position:
+        return idx, acceptance_rate, mean_accepted_prefix, per_position_log
     return idx, acceptance_rate, mean_accepted_prefix
 
 

@@ -247,3 +247,27 @@ python -m pipeline.run_generate \
   --output_jsonl results/dnagpt_one.jsonl \
   --output_csv results/dnagpt_one_summary.csv
 ```
+
+## 7) Layer selection ablation (reviewer 2.a.1)
+
+Compares three layer selection strategies for constructing truncated draft models: **First-N** (bottom layers), **Last-N** (top layers), and **Mixed** (evenly-spaced). Evaluated on ProtGPT2 and ProGen2-xlarge across 3–6 draft layers.
+
+### Run the experiment
+
+```bash
+python scripts/layer_selection_experiment.py --model both --device cuda
+```
+
+This produces per-sample CSVs in `results/layer_selection/`.
+
+### Generate summary + plots
+
+```bash
+python scripts/create_layer_selection_summary.py
+python scripts/plot_layer_selection.py
+```
+
+Outputs:
+- `results/layer_selection/layer_selection_summary.csv` — mean ± std per (model, strategy, n_draft_layers)
+- `results/layer_selection_plots/layer_strategy_comparison.png` — bar chart (average across layer counts)
+- `results/layer_selection_plots/layer_strategy_lines.png` — line plot (by number of layers)
