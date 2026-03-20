@@ -32,7 +32,6 @@ mkdir -p results
 #     "<R>ACGTACGT" results/dnagpt_one.jsonl results/dnagpt_one_summary.csv
 #
 # Notes:
-# - If you want to generate from an hg38 row, use scripts/run_dna_one.sh (hg38_sequences.csv).
 
 PROMPT="${1:-<R>ACGT}"
 OUT_JSONL="${2:-results/dnagpt_one.jsonl}"

@@ -250,7 +250,7 @@ python -m pipeline.run_generate \
 
 ## 7) Layer selection ablation (reviewer 2.a.1)
 
-Compares three layer selection strategies for constructing truncated draft models: **First-N** (bottom layers), **Last-N** (top layers), and **Mixed** (evenly-spaced). Evaluated on ProtGPT2 and ProGen2-xlarge across 3–6 draft layers.
+Compares three layer selection strategies for constructing truncated draft models: **First-N** (bottom layers), **Last-N** (top layers), and **Mixed** (evenly-spaced). Evaluated on ProtGPT2 and ProGen2-xlarge across 3, 4, and 6 draft layers.
 
 ### Run the experiment
 

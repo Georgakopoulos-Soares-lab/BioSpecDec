@@ -23,7 +23,7 @@ def _guard_against_wrong_csv(df: pd.DataFrame, input_csv: str) -> None:
     if "draft_mode" in df.columns or "draft_model_effective" in df.columns:
         raise ValueError(
             "This looks like a protein wide CSV (has 'draft_mode' / draft metadata columns). "
-            "Use protein_likelihood_scoring.py for protein models, not likelihood_scoring.py. "
+            "Use 'python -m pipeline.score_likelihoods' for protein models, not likelihood_scoring.py. "
             f"input_csv={input_csv}"
         )
 
@@ -33,7 +33,7 @@ def _guard_against_wrong_csv(df: pd.DataFrame, input_csv: str) -> None:
             raise ValueError(
                 "This CSV contains non-DNAGPT model_family values "
                 f"({vals}). likelihood_scoring.py only supports DNAGPT. "
-                "Use protein_likelihood_scoring.py for protein sweeps. "
+                "Use 'python -m pipeline.score_likelihoods' for protein sweeps. "
                 f"input_csv={input_csv}"
             )
 
@@ -74,7 +74,7 @@ def _validate_ids_in_vocab(cleaned: list[tuple[int, list[int], list[int]]], voca
             "Token ID out of range for DNAGPT vocabulary. "
             f"vocab_size={vocab_size}, bad_id={bad_id}, row_index={row_idx}, observed_min={min_id}, observed_max={max_id}. "
             "This usually means you're trying to score a protein CSV (ProtGPT2/ProGen2 token IDs) with the DNAGPT scorer. "
-            "Use protein_likelihood_scoring.py for protein wide CSVs. "
+            "Use 'python -m pipeline.score_likelihoods' for protein wide CSVs. "
             f"input_csv={input_csv}"
         )
 
